@@ -15,7 +15,7 @@ type GitRepository struct {
 }
 
 func NewGitRepository(path string, force bool) (*GitRepository, error) {
-	gitdir := filepath.Join(path, ".git")
+	gitdir := filepath.Join(path, ".gitt")
 	if !(force || isDir(gitdir)) {
 		return nil, fmt.Errorf("not a Git repository: %s", path)
 	}
@@ -57,7 +57,7 @@ func isDir(path string) bool {
 
 // Read configuration file
 func readConfigFile(path string, force bool) (*ini.File, error) {
-	confPath := filepath.Join(path, ".git", "config")
+	confPath := filepath.Join(path, ".gitt", "config")
 	if !isDir(confPath) {
 		if !force {
 			return nil, fmt.Errorf("configuration file missing: %s", confPath)
