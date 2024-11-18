@@ -1,71 +1,87 @@
 package gitobject
 
 import (
+	"bytes"
 	"compress/zlib"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/dibyanshu47/building-git/pkg/gitrepository"
 )
 
-func ObjectRead(repo *gitrepository.GitRepository, sha string) (*GitObject, error) {
+func ObjectRead(repo *gitrepository.GitRepository, sha string) (GitObject, error) {
 	path := gitrepository.RepoPath(repo, "objects", sha[0:2], sha[2:])
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("%v does not exist", path)
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, err
+		}
+		return nil, err
 	}
+	defer file.Close()
 
-	data, err := os.ReadFile(path)
+	// Read the compressed data
+	rawData, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
 
-	raw, err := zlib.NewReader(strings.NewReader(string(data)))
+	// Decompress the data
+	reader, err := zlib.NewReader(bytes.NewReader(rawData))
 	if err != nil {
 		return nil, err
 	}
-	defer raw.Close()
+	defer reader.Close()
 
-	rawData, err := io.ReadAll(raw)
+	decompressedData, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
 
-	decompressedData := string(rawData)
+	// Read object type (first part before space)
+	spaceIndex := bytes.IndexByte(decompressedData, ' ')
+	if spaceIndex == -1 {
+		return nil, errors.New("malformed object: missing space delimiter")
+	}
+	fmtType := decompressedData[:spaceIndex]
 
-	// Read object type
-	x := strings.Index(decompressedData, " ")
-	format := decompressedData[0:x]
-
-	// Read and validate object size
-	y := strings.Index(decompressedData, "\x00")
-	size, err := strconv.Atoi(decompressedData[x:y])
+	// Read object size (between space and null byte)
+	nullIndex := bytes.IndexByte(decompressedData[spaceIndex:], '\x00')
+	if nullIndex == -1 {
+		return nil, errors.New("malformed object: missing null byte")
+	}
+	objectSize, err := strconv.Atoi(string(decompressedData[spaceIndex+1 : spaceIndex+nullIndex]))
 	if err != nil {
-		return nil, err
-	}
-	if size != len(rawData)-y-1 {
-		return nil, errors.New("malformed object: bad length")
+		return nil, fmt.Errorf("invalid object size: %v", err)
 	}
 
-	// Pick constructor
-	var obj *GitObject
-	switch format {
-	case "commit":
-		// obj = &GitCommit{content: rawData[y+1:]}
-	case "tree":
-		// obj = &GitTree{content: rawData[y+1:]}
-	case "tag":
-		// obj = &GitTag{content: rawData[y+1:]}
+	// Validate size
+	if objectSize != len(decompressedData)-spaceIndex-nullIndex-1 {
+		return nil, fmt.Errorf("malformed object %s: bad length", sha)
+	}
+
+	// Determine the object type and create the appropriate object
+	var gitObject GitObject
+	switch string(fmtType) {
+	// case "commit":
+	// 	gitObject = &GitCommit{}
+	// case "tree":
+	// 	gitObject = &GitTree{}
+	// case "tag":
+	// 	gitObject = &GitTag{}
 	case "blob":
-		// obj = &GitBlob{content: rawData[y+1:]}
+		gitObject = NewGitBlob(decompressedData)
 	default:
-		return nil, fmt.Errorf("unknown type %s for object", format)
+		return nil, fmt.Errorf("unknown type %s for object %s", fmtType, sha)
 	}
 
-	// Return object
-	return obj, nil
+	// Deserialize the object data
+	gitObject.Deserialize(decompressedData[spaceIndex+nullIndex+1:])
+
+	// Return the constructed Git object
+	return gitObject, nil
 }
